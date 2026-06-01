@@ -1,0 +1,6 @@
+/ledger
+*.test
+*.out
+.env
+node_modules/
+web/dist/
