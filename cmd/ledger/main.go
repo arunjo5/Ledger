@@ -10,6 +10,7 @@ import (
 	"ledger/internal/api"
 	"ledger/internal/config"
 	"ledger/internal/db"
+	"ledger/internal/ledger"
 	"ledger/migrations"
 )
 
@@ -39,7 +40,14 @@ func serve(cfg config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return api.NewServer(cfg).Run(ctx)
+	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	store := ledger.NewStore(pool)
+	return api.NewServer(cfg, store).Run(ctx)
 }
 
 func migrate(cfg config.Config) error {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ledger/internal/config"
+	"ledger/internal/ledger"
 )
 
 type Server struct {
@@ -15,9 +16,23 @@ type Server struct {
 	http *http.Server
 }
 
-func NewServer(cfg config.Config) *Server {
+func NewServer(cfg config.Config, store *ledger.Store) *Server {
+	h := &handlers{store: store}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
+
+	mux.HandleFunc("POST /accounts", h.createAccount)
+	mux.HandleFunc("GET /accounts", h.listAccounts)
+	mux.HandleFunc("GET /accounts/{id}", h.getAccount)
+	mux.HandleFunc("GET /accounts/{id}/balance", h.notImplemented)
+	mux.HandleFunc("GET /accounts/{id}/entries", h.notImplemented)
+
+	mux.HandleFunc("POST /transactions", h.notImplemented)
+	mux.HandleFunc("GET /transactions/{id}", h.notImplemented)
+	mux.HandleFunc("POST /transactions/{id}/reverse", h.notImplemented)
+
+	mux.HandleFunc("POST /admin/reconcile", h.notImplemented)
 
 	return &Server{
 		cfg: cfg,
@@ -28,6 +43,11 @@ func NewServer(cfg config.Config) *Server {
 			WriteTimeout: 10 * time.Second,
 		},
 	}
+}
+
+// Handler exposes the router for tests.
+func (s *Server) Handler() http.Handler {
+	return s.http.Handler
 }
 
 func (s *Server) Run(ctx context.Context) error {
