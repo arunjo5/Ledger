@@ -130,18 +130,10 @@ func TestListAccountsEndpoint(t *testing.T) {
 	}
 }
 
-func TestUnimplementedEndpointsReturn501(t *testing.T) {
+func TestReconcileNotImplementedYet(t *testing.T) {
 	h := reset(t)
-	for _, tc := range []struct {
-		method, path string
-	}{
-		{"POST", "/transactions"},
-		{"GET", "/transactions/00000000-0000-0000-0000-000000000000"},
-		{"POST", "/admin/reconcile"},
-	} {
-		rec := do(h, tc.method, tc.path, "")
-		if rec.Code != http.StatusNotImplemented {
-			t.Fatalf("%s %s: code = %d, want 501", tc.method, tc.path, rec.Code)
-		}
+	rec := do(h, "POST", "/admin/reconcile", "")
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("code = %d, want 501", rec.Code)
 	}
 }

@@ -25,12 +25,12 @@ func NewServer(cfg config.Config, store *ledger.Store) *Server {
 	mux.HandleFunc("POST /accounts", h.createAccount)
 	mux.HandleFunc("GET /accounts", h.listAccounts)
 	mux.HandleFunc("GET /accounts/{id}", h.getAccount)
-	mux.HandleFunc("GET /accounts/{id}/balance", h.notImplemented)
-	mux.HandleFunc("GET /accounts/{id}/entries", h.notImplemented)
+	mux.HandleFunc("GET /accounts/{id}/balance", h.accountBalance)
+	mux.HandleFunc("GET /accounts/{id}/entries", h.accountEntries)
 
-	mux.HandleFunc("POST /transactions", h.notImplemented)
-	mux.HandleFunc("GET /transactions/{id}", h.notImplemented)
-	mux.HandleFunc("POST /transactions/{id}/reverse", h.notImplemented)
+	mux.HandleFunc("POST /transactions", h.createTransaction)
+	mux.HandleFunc("GET /transactions/{id}", h.getTransaction)
+	mux.HandleFunc("POST /transactions/{id}/reverse", h.reverseTransaction)
 
 	mux.HandleFunc("POST /admin/reconcile", h.notImplemented)
 
