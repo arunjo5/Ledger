@@ -1,9 +1,11 @@
 package ledger
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -25,7 +27,7 @@ func mustAccount(t *testing.T, store *Store, label string) string {
 
 func commit(t *testing.T, store *Store, entries ...EntryInput) Transaction {
 	t.Helper()
-	txn, err := store.CreateTransaction(context.Background(), NewTransaction{
+	res, err := store.CreateTransaction(context.Background(), NewTransaction{
 		IdempotencyKey: nextKey(),
 		RequestHash:    []byte("h"),
 		Description:    "test",
@@ -34,7 +36,7 @@ func commit(t *testing.T, store *Store, entries ...EntryInput) Transaction {
 	if err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	return txn
+	return res.Transaction
 }
 
 func usd(account string, amount int64) EntryInput {
@@ -188,10 +190,11 @@ func TestReverseTransaction(t *testing.T) {
 
 	original := commit(t, store, usd(a, -100), usd(b, 100))
 
-	reversal, err := store.ReverseTransaction(ctx, original.ID, nextKey(), []byte("h"))
+	res, err := store.ReverseTransaction(ctx, original.ID, nextKey(), []byte("h"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	reversal := res.Transaction
 	if reversal.ReversesTransactionID == nil || *reversal.ReversesTransactionID != original.ID {
 		t.Fatalf("reverses = %v, want %s", reversal.ReversesTransactionID, original.ID)
 	}
@@ -211,4 +214,117 @@ func TestGetTransactionNotFound(t *testing.T) {
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
+}
+
+func TestIdempotentReplayReturnsCached(t *testing.T) {
+	store := newTestStore(t)
+	a := mustAccount(t, store, "a")
+	b := mustAccount(t, store, "b")
+	in := NewTransaction{
+		IdempotencyKey: nextKey(),
+		RequestHash:    []byte("body-1"),
+		Entries:        []EntryInput{usd(a, -100), usd(b, 100)},
+	}
+
+	first, err := store.CreateTransaction(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Replayed {
+		t.Fatal("first call should not be a replay")
+	}
+
+	second, err := store.CreateTransaction(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Replayed {
+		t.Fatal("second call should be a replay")
+	}
+	if second.Transaction.ID != first.Transaction.ID {
+		t.Fatalf("ids differ: %s vs %s", first.Transaction.ID, second.Transaction.ID)
+	}
+	if !bytes.Equal(second.Body, first.Body) {
+		t.Fatal("replay body differs from the original")
+	}
+
+	if got := transactionCount(t); got != 1 {
+		t.Fatalf("transactions = %d, want 1", got)
+	}
+}
+
+func TestIdempotencyConflictDifferentBody(t *testing.T) {
+	store := newTestStore(t)
+	a := mustAccount(t, store, "a")
+	b := mustAccount(t, store, "b")
+	key := nextKey()
+
+	if _, err := store.CreateTransaction(context.Background(), NewTransaction{
+		IdempotencyKey: key,
+		RequestHash:    []byte("body-1"),
+		Entries:        []EntryInput{usd(a, -100), usd(b, 100)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := store.CreateTransaction(context.Background(), NewTransaction{
+		IdempotencyKey: key,
+		RequestHash:    []byte("body-2"),
+		Entries:        []EntryInput{usd(a, -100), usd(b, 100)},
+	})
+	if !errors.Is(err, ErrIdempotencyKeyConflict) {
+		t.Fatalf("err = %v, want ErrIdempotencyKeyConflict", err)
+	}
+}
+
+func TestConcurrentSameKeyCreatesOne(t *testing.T) {
+	store := newTestStore(t)
+	a := mustAccount(t, store, "a")
+	b := mustAccount(t, store, "b")
+
+	const n = 8
+	key := nextKey()
+	hash := []byte("same-body")
+
+	var wg sync.WaitGroup
+	results := make([]CreateResult, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = store.CreateTransaction(context.Background(), NewTransaction{
+				IdempotencyKey: key,
+				RequestHash:    hash,
+				Entries:        []EntryInput{usd(a, -100), usd(b, 100)},
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	var id string
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("goroutine %d: %v", i, errs[i])
+		}
+		if id == "" {
+			id = results[i].Transaction.ID
+		} else if results[i].Transaction.ID != id {
+			t.Fatalf("different transaction ids: %s and %s", id, results[i].Transaction.ID)
+		}
+	}
+
+	if got := transactionCount(t); got != 1 {
+		t.Fatalf("transactions = %d, want exactly 1", got)
+	}
+}
+
+func transactionCount(t *testing.T) int {
+	t.Helper()
+	var count int
+	if err := testPool.QueryRow(context.Background(),
+		`select count(*) from transactions`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }

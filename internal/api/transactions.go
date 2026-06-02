@@ -48,7 +48,7 @@ func (h *handlers) createTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	txn, err := h.store.CreateTransaction(r.Context(), ledger.NewTransaction{
+	res, err := h.store.CreateTransaction(r.Context(), ledger.NewTransaction{
 		IdempotencyKey: key,
 		RequestHash:    hash,
 		Description:    strings.TrimSpace(req.Description),
@@ -58,7 +58,7 @@ func (h *handlers) createTransaction(w http.ResponseWriter, r *http.Request) {
 		writeTransactionError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, txn)
+	writeTransactionResult(w, res)
 }
 
 func (h *handlers) getTransaction(w http.ResponseWriter, r *http.Request) {
@@ -94,12 +94,22 @@ func (h *handlers) reverseTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hash := sha256.Sum256([]byte("reverse:" + id))
-	txn, err := h.store.ReverseTransaction(r.Context(), id, key, hash[:])
+	res, err := h.store.ReverseTransaction(r.Context(), id, key, hash[:])
 	if err != nil {
 		writeTransactionError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, txn)
+	writeTransactionResult(w, res)
+}
+
+// writeTransactionResult writes the response bytes verbatim so a replay matches the original.
+func writeTransactionResult(w http.ResponseWriter, res ledger.CreateResult) {
+	w.Header().Set("Content-Type", "application/json")
+	if res.Replayed {
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+	w.WriteHeader(res.Status)
+	_, _ = w.Write(res.Body)
 }
 
 func writeTransactionError(w http.ResponseWriter, err error) {
@@ -110,6 +120,10 @@ func writeTransactionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "not_balanced", err.Error())
 	case errors.Is(err, ledger.ErrIdempotencyKeyConflict):
 		writeError(w, http.StatusConflict, "idempotency_conflict", err.Error())
+	case errors.Is(err, ledger.ErrPriorAttemptFailed):
+		writeError(w, http.StatusConflict, "prior_attempt_failed", err.Error())
+	case errors.Is(err, ledger.ErrInProgress):
+		writeError(w, http.StatusConflict, "in_progress", err.Error())
 	case errors.Is(err, ledger.ErrNotCommitted):
 		writeError(w, http.StatusConflict, "not_committed", "only a committed transaction can be reversed")
 	case errors.Is(err, ledger.ErrNotFound):

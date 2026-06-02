@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,9 +13,17 @@ import (
 
 var (
 	ErrUnknownAccount         = errors.New("unknown account")
-	ErrIdempotencyKeyConflict = errors.New("idempotency key already used")
+	ErrIdempotencyKeyConflict = errors.New("idempotency key already used with a different request")
+	ErrPriorAttemptFailed     = errors.New("a prior request with this idempotency key failed")
+	ErrInProgress             = errors.New("a request with this idempotency key is still being processed")
 	ErrNotBalanced            = errors.New("transaction is not balanced per currency")
 	ErrNotCommitted           = errors.New("transaction is not committed")
+)
+
+const (
+	statusCreated           = 201
+	idempotencyPollInterval = 25 * time.Millisecond
+	idempotencyMaxWait      = 3 * time.Second
 )
 
 type EntryInput struct {
@@ -31,12 +40,37 @@ type NewTransaction struct {
 	Entries               []EntryInput
 }
 
-// CreateTransaction records a pending intent, then commits entries and status atomically.
-func (s *Store) CreateTransaction(ctx context.Context, in NewTransaction) (Transaction, error) {
+// CreateResult is the outcome of a create: a fresh commit or an idempotent replay.
+type CreateResult struct {
+	Transaction Transaction
+	Status      int
+	Body        []byte
+	Replayed    bool
+}
+
+// CreateTransaction commits a transaction. A duplicate idempotency key resolves to the cached response.
+func (s *Store) CreateTransaction(ctx context.Context, in NewTransaction) (CreateResult, error) {
 	if err := s.ensureAccountsExist(ctx, in.Entries); err != nil {
-		return Transaction{}, err
+		return CreateResult{}, err
 	}
 
+	txID, createdAt, err := s.insertPending(ctx, in)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return s.resolveExisting(ctx, in)
+		}
+		return CreateResult{}, err
+	}
+
+	txn, body, err := s.commitEntries(ctx, txID, in, createdAt)
+	if err != nil {
+		s.markFailed(ctx, txID)
+		return CreateResult{}, err
+	}
+	return CreateResult{Transaction: txn, Status: statusCreated, Body: body}, nil
+}
+
+func (s *Store) insertPending(ctx context.Context, in NewTransaction) (string, time.Time, error) {
 	var txID string
 	var createdAt time.Time
 	err := s.pool.QueryRow(ctx,
@@ -45,25 +79,13 @@ func (s *Store) CreateTransaction(ctx context.Context, in NewTransaction) (Trans
 		 returning id::text, created_at`,
 		in.Description, in.IdempotencyKey, in.RequestHash, in.ReversesTransactionID).
 		Scan(&txID, &createdAt)
-	if err != nil {
-		if isUniqueViolation(err) {
-			return Transaction{}, ErrIdempotencyKeyConflict
-		}
-		return Transaction{}, err
-	}
-
-	txn, err := s.commitEntries(ctx, txID, in, createdAt)
-	if err != nil {
-		s.markFailed(ctx, txID)
-		return Transaction{}, err
-	}
-	return txn, nil
+	return txID, createdAt, err
 }
 
-func (s *Store) commitEntries(ctx context.Context, txID string, in NewTransaction, createdAt time.Time) (Transaction, error) {
+func (s *Store) commitEntries(ctx context.Context, txID string, in NewTransaction, createdAt time.Time) (Transaction, []byte, error) {
 	dbTx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return Transaction{}, err
+		return Transaction{}, nil, err
 	}
 	defer dbTx.Rollback(ctx)
 
@@ -77,7 +99,7 @@ func (s *Store) commitEntries(ctx context.Context, txID string, in NewTransactio
 			 returning id, created_at`,
 			txID, e.AccountID, e.Currency, e.Amount).Scan(&id, &created)
 		if err != nil {
-			return Transaction{}, err
+			return Transaction{}, nil, err
 		}
 		entries = append(entries, Entry{
 			ID:            id,
@@ -93,7 +115,7 @@ func (s *Store) commitEntries(ctx context.Context, txID string, in NewTransactio
 	if err := dbTx.QueryRow(ctx,
 		`update transactions set status = 'committed', committed_at = now()
 		 where id = $1::uuid returning committed_at`, txID).Scan(&committedAt); err != nil {
-		return Transaction{}, err
+		return Transaction{}, nil, err
 	}
 
 	txn := Transaction{
@@ -108,21 +130,86 @@ func (s *Store) commitEntries(ctx context.Context, txID string, in NewTransactio
 
 	body, err := json.Marshal(txn)
 	if err != nil {
-		return Transaction{}, err
+		return Transaction{}, nil, err
 	}
 	if _, err := dbTx.Exec(ctx,
-		`update transactions set response_body = $2, response_status = 201 where id = $1::uuid`,
-		txID, string(body)); err != nil {
-		return Transaction{}, err
+		`update transactions set response_body = $2, response_status = $3 where id = $1::uuid`,
+		txID, string(body), statusCreated); err != nil {
+		return Transaction{}, nil, err
 	}
 
 	if err := dbTx.Commit(ctx); err != nil {
 		if pgErrorCode(err) == "LG001" {
-			return Transaction{}, ErrNotBalanced
+			return Transaction{}, nil, ErrNotBalanced
 		}
-		return Transaction{}, err
+		return Transaction{}, nil, err
 	}
-	return txn, nil
+	return txn, body, nil
+}
+
+// resolveExisting returns the cached response for a duplicate key, or conflicts on a different body.
+func (s *Store) resolveExisting(ctx context.Context, in NewTransaction) (CreateResult, error) {
+	deadline := time.Now().Add(idempotencyMaxWait)
+	for {
+		c, found, err := s.lookupByKey(ctx, in.IdempotencyKey)
+		if err != nil {
+			return CreateResult{}, err
+		}
+		if !found {
+			return CreateResult{}, ErrNotFound
+		}
+		if !bytes.Equal(c.requestHash, in.RequestHash) {
+			return CreateResult{}, ErrIdempotencyKeyConflict
+		}
+
+		switch Status(c.status) {
+		case StatusCommitted:
+			status := statusCreated
+			if c.responseStatus != nil {
+				status = *c.responseStatus
+			}
+			var body []byte
+			var txn Transaction
+			if c.responseBody != nil {
+				body = []byte(*c.responseBody)
+				_ = json.Unmarshal(body, &txn)
+			}
+			return CreateResult{Transaction: txn, Status: status, Body: body, Replayed: true}, nil
+		case StatusFailed:
+			return CreateResult{}, ErrPriorAttemptFailed
+		default:
+			if time.Now().After(deadline) {
+				return CreateResult{}, ErrInProgress
+			}
+			select {
+			case <-ctx.Done():
+				return CreateResult{}, ctx.Err()
+			case <-time.After(idempotencyPollInterval):
+			}
+		}
+	}
+}
+
+type cachedTx struct {
+	status         string
+	requestHash    []byte
+	responseBody   *string
+	responseStatus *int
+}
+
+func (s *Store) lookupByKey(ctx context.Context, key string) (cachedTx, bool, error) {
+	var c cachedTx
+	err := s.pool.QueryRow(ctx,
+		`select status, request_hash, response_body, response_status
+		 from transactions where idempotency_key = $1`, key).
+		Scan(&c.status, &c.requestHash, &c.responseBody, &c.responseStatus)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return cachedTx{}, false, nil
+		}
+		return cachedTx{}, false, err
+	}
+	return c, true, nil
 }
 
 func (s *Store) markFailed(ctx context.Context, txID string) {
@@ -222,13 +309,13 @@ func (s *Store) AccountEntries(ctx context.Context, accountID string, limit int)
 }
 
 // ReverseTransaction posts the mirror image of a committed transaction.
-func (s *Store) ReverseTransaction(ctx context.Context, originalID, idempotencyKey string, requestHash []byte) (Transaction, error) {
+func (s *Store) ReverseTransaction(ctx context.Context, originalID, idempotencyKey string, requestHash []byte) (CreateResult, error) {
 	original, err := s.GetTransaction(ctx, originalID)
 	if err != nil {
-		return Transaction{}, err
+		return CreateResult{}, err
 	}
 	if original.Status != StatusCommitted {
-		return Transaction{}, ErrNotCommitted
+		return CreateResult{}, ErrNotCommitted
 	}
 
 	entries := make([]EntryInput, 0, len(original.Entries))

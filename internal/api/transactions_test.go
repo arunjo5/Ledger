@@ -175,24 +175,49 @@ func TestReverseEndpoint(t *testing.T) {
 	}
 }
 
-// Phase 4 rejects a reused key. Phase 5 will return the cached response instead; either way, no duplicate.
-func TestDuplicateKeyCreatesNoSecondTransaction(t *testing.T) {
+func TestIdempotentReplayEndpoint(t *testing.T) {
 	h := reset(t)
 	a := makeAccount(t, "a")
 	b := makeAccount(t, "b")
 
-	doReq(h, "POST", "/transactions", transferBody(a, b, 100), key("dup"))
-	rec := doReq(h, "POST", "/transactions", transferBody(a, b, 100), key("dup"))
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("code = %d, want 409", rec.Code)
+	first := doReq(h, "POST", "/transactions", transferBody(a, b, 100), key("dup"))
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first code = %d, body = %s", first.Code, first.Body.String())
+	}
+
+	second := doReq(h, "POST", "/transactions", transferBody(a, b, 100), key("dup"))
+	if second.Code != http.StatusCreated {
+		t.Fatalf("replay code = %d, want 201", second.Code)
+	}
+	if second.Header().Get("Idempotent-Replayed") != "true" {
+		t.Fatal("replay should set the Idempotent-Replayed header")
+	}
+
+	var t1, t2 ledger.Transaction
+	json.Unmarshal(first.Body.Bytes(), &t1)
+	json.Unmarshal(second.Body.Bytes(), &t2)
+	if t1.ID != t2.ID {
+		t.Fatalf("ids differ: %s vs %s", t1.ID, t2.ID)
 	}
 
 	var count int
 	if err := testPool.QueryRow(context.Background(),
-		`select count(*) from transactions where status = 'committed'`).Scan(&count); err != nil {
+		`select count(*) from transactions`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
-		t.Fatalf("committed transactions = %d, want 1", count)
+		t.Fatalf("transactions = %d, want 1", count)
+	}
+}
+
+func TestIdempotencyConflictEndpoint(t *testing.T) {
+	h := reset(t)
+	a := makeAccount(t, "a")
+	b := makeAccount(t, "b")
+
+	doReq(h, "POST", "/transactions", transferBody(a, b, 100), key("k"))
+	rec := doReq(h, "POST", "/transactions", transferBody(a, b, 200), key("k"))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("code = %d, want 409", rec.Code)
 	}
 }
