@@ -32,7 +32,7 @@ func NewServer(cfg config.Config, store *ledger.Store) *Server {
 	mux.HandleFunc("GET /transactions/{id}", h.getTransaction)
 	mux.HandleFunc("POST /transactions/{id}/reverse", h.reverseTransaction)
 
-	mux.HandleFunc("POST /admin/reconcile", h.notImplemented)
+	mux.HandleFunc("POST /admin/reconcile", h.reconcile)
 
 	return &Server{
 		cfg: cfg,

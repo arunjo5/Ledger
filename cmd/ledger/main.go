@@ -47,6 +47,12 @@ func serve(cfg config.Config) error {
 	defer pool.Close()
 
 	store := ledger.NewStore(pool)
+	if n, err := store.RecoverPending(ctx); err != nil {
+		return err
+	} else if n > 0 {
+		log.Printf("recovered %d pending transactions", n)
+	}
+
 	return api.NewServer(cfg, store).Run(ctx)
 }
 

@@ -130,10 +130,3 @@ func TestListAccountsEndpoint(t *testing.T) {
 	}
 }
 
-func TestReconcileNotImplementedYet(t *testing.T) {
-	h := reset(t)
-	rec := do(h, "POST", "/admin/reconcile", "")
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("code = %d, want 501", rec.Code)
-	}
-}
