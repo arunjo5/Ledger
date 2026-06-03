@@ -18,8 +18,9 @@ const (
 )
 
 type createTransactionRequest struct {
-	Description string           `json:"description"`
-	Entries     []entryInputJSON `json:"entries"`
+	Description    string           `json:"description"`
+	IdempotencyKey string           `json:"idempotency_key"`
+	Entries        []entryInputJSON `json:"entries"`
 }
 
 type entryInputJSON struct {
@@ -59,6 +60,15 @@ func (h *handlers) createTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeTransactionResult(w, res)
+}
+
+func (h *handlers) listTransactions(w http.ResponseWriter, r *http.Request) {
+	txns, err := h.store.ListTransactions(r.Context(), 200)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not list transactions")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"transactions": txns})
 }
 
 func (h *handlers) getTransaction(w http.ResponseWriter, r *http.Request) {

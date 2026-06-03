@@ -40,3 +40,13 @@ type Balance struct {
 	Currency string `json:"currency"`
 	Amount   int64  `json:"amount"`
 }
+
+type AccountEntry struct {
+	ID            int64     `json:"id"`
+	TransactionID string    `json:"transaction_id"`
+	AccountID     string    `json:"account_id"`
+	Currency      string    `json:"currency"`
+	Amount        int64     `json:"amount"`
+	Description   string    `json:"description"`
+	CreatedAt     time.Time `json:"created_at"`
+}

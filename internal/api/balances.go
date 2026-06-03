@@ -47,11 +47,17 @@ func (h *handlers) accountEntries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	asOf, err := parseAsOf(r.URL.Query().Get("as_of"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_as_of", err.Error())
+		return
+	}
+
 	if !h.accountExists(w, r, id) {
 		return
 	}
 
-	entries, err := h.store.AccountEntries(r.Context(), id, parseLimit(r.URL.Query().Get("limit")))
+	entries, err := h.store.AccountEntries(r.Context(), id, asOf, parseLimit(r.URL.Query().Get("limit")))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load entries")
 		return

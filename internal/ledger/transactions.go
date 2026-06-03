@@ -298,20 +298,24 @@ func (s *Store) Balance(ctx context.Context, accountID string, asOf *time.Time) 
 	return balances, rows.Err()
 }
 
-func (s *Store) AccountEntries(ctx context.Context, accountID string, limit int) ([]Entry, error) {
+func (s *Store) AccountEntries(ctx context.Context, accountID string, asOf *time.Time, limit int) ([]AccountEntry, error) {
 	rows, err := s.pool.Query(ctx,
-		`select id, transaction_id::text, account_id::text, currency, amount, created_at
-		 from entries where account_id = $1::uuid
-		 order by id desc limit $2`, accountID, limit)
+		`select e.id, e.transaction_id::text, e.account_id::text, e.currency, e.amount, t.description, t.committed_at
+		 from entries e
+		 join transactions t on t.id = e.transaction_id
+		 where e.account_id = $1::uuid
+		   and t.status = 'committed'
+		   and ($2::timestamptz is null or t.committed_at <= $2)
+		 order by e.id desc limit $3`, accountID, asOf, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	entries := []Entry{}
+	entries := []AccountEntry{}
 	for rows.Next() {
-		var e Entry
-		if err := rows.Scan(&e.ID, &e.TransactionID, &e.AccountID, &e.Currency, &e.Amount, &e.CreatedAt); err != nil {
+		var e AccountEntry
+		if err := rows.Scan(&e.ID, &e.TransactionID, &e.AccountID, &e.Currency, &e.Amount, &e.Description, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		entries = append(entries, e)
@@ -444,4 +448,36 @@ func assertNoOverdraft(ctx context.Context, dbTx pgx.Tx, accountIDs []string) er
 		return err
 	}
 	return &OverdraftError{Account: label, Currency: currency}
+}
+
+type TxSummary struct {
+	ID          string    `json:"id"`
+	Status      string    `json:"status"`
+	Description string    `json:"description"`
+	Lines       int       `json:"lines"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (s *Store) ListTransactions(ctx context.Context, limit int) ([]TxSummary, error) {
+	rows, err := s.pool.Query(ctx,
+		`select t.id::text, t.status, t.description, count(e.id), t.created_at
+		 from transactions t
+		 left join entries e on e.transaction_id = t.id
+		 group by t.id, t.status, t.description, t.created_at
+		 order by t.created_at desc
+		 limit $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []TxSummary{}
+	for rows.Next() {
+		var t TxSummary
+		if err := rows.Scan(&t.ID, &t.Status, &t.Description, &t.Lines, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }

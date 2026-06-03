@@ -22,6 +22,11 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
+func (s *Store) Ping(ctx context.Context) error {
+	var one int
+	return s.pool.QueryRow(ctx, "select 1").Scan(&one)
+}
+
 func (s *Store) CreateAccount(ctx context.Context, label *string) (Account, error) {
 	var a Account
 	err := s.pool.QueryRow(ctx,

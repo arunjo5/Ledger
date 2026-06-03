@@ -31,9 +31,29 @@ func main() {
 		if err := migrate(cfg); err != nil {
 			log.Fatal(err)
 		}
+	case "seed":
+		if err := seed(cfg); err != nil {
+			log.Fatal(err)
+		}
 	default:
 		log.Fatalf("unknown command: %s", cmd)
 	}
+}
+
+func seed(cfg config.Config) error {
+	ctx := context.Background()
+
+	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	if err := ledger.NewStore(pool).Seed(ctx); err != nil {
+		return err
+	}
+	log.Println("seeded demo data")
+	return nil
 }
 
 func serve(cfg config.Config) error {

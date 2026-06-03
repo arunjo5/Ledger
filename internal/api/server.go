@@ -21,6 +21,7 @@ func NewServer(cfg config.Config, store *ledger.Store) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
+	mux.HandleFunc("GET /health", h.health)
 
 	mux.HandleFunc("POST /accounts", h.createAccount)
 	mux.HandleFunc("GET /accounts", h.listAccounts)
@@ -28,11 +29,14 @@ func NewServer(cfg config.Config, store *ledger.Store) *Server {
 	mux.HandleFunc("GET /accounts/{id}/balance", h.accountBalance)
 	mux.HandleFunc("GET /accounts/{id}/entries", h.accountEntries)
 
+	mux.HandleFunc("GET /transactions", h.listTransactions)
 	mux.HandleFunc("POST /transactions", h.createTransaction)
 	mux.HandleFunc("GET /transactions/{id}", h.getTransaction)
 	mux.HandleFunc("POST /transactions/{id}/reverse", h.reverseTransaction)
 
+	mux.HandleFunc("GET /overview", h.overview)
 	mux.HandleFunc("POST /admin/reconcile", h.reconcile)
+	mux.HandleFunc("POST /demo/reset", h.reset)
 
 	return &Server{
 		cfg: cfg,

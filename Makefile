@@ -1,4 +1,4 @@
-.PHONY: deps run test migrate clean up down
+.PHONY: deps run test migrate seed clean up down
 
 deps:
 	go mod tidy
@@ -11,6 +11,9 @@ test:
 
 migrate:
 	go run ./cmd/ledger migrate
+
+seed:
+	go run ./cmd/ledger seed
 
 up:
 	docker compose up -d
