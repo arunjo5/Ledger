@@ -11,9 +11,10 @@ const (
 )
 
 type Account struct {
-	ID        string    `json:"id"`
-	Label     *string   `json:"label,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                 string    `json:"id"`
+	Label              *string   `json:"label,omitempty"`
+	OverdraftProtected bool      `json:"overdraft_protected"`
+	CreatedAt          time.Time `json:"created_at"`
 }
 
 type Entry struct {

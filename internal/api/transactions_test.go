@@ -221,3 +221,37 @@ func TestIdempotencyConflictEndpoint(t *testing.T) {
 		t.Fatalf("code = %d, want 409", rec.Code)
 	}
 }
+
+func makeProtectedAccount(t *testing.T, label string) string {
+	t.Helper()
+	var id string
+	if err := testPool.QueryRow(context.Background(),
+		`insert into accounts (label, overdraft_protected) values ($1, true) returning id::text`,
+		label).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestOverdraftEndpoint(t *testing.T) {
+	h := reset(t)
+	cash := makeAccount(t, "cash")
+	customer := makeProtectedAccount(t, "customer")
+
+	doReq(h, "POST", "/transactions", transferBody(cash, customer, 100), key("fund"))
+	rec := doReq(h, "POST", "/transactions", transferBody(customer, cash, 150), key("withdraw"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["code"] != "overdraft" {
+		t.Fatalf("code = %v, want overdraft", body["code"])
+	}
+	if body["account"] != "customer" {
+		t.Fatalf("account = %v, want customer", body["account"])
+	}
+}

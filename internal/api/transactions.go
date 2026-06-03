@@ -113,6 +113,17 @@ func writeTransactionResult(w http.ResponseWriter, res ledger.CreateResult) {
 }
 
 func writeTransactionError(w http.ResponseWriter, err error) {
+	var overdraft *ledger.OverdraftError
+	if errors.As(err, &overdraft) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":    overdraft.Error(),
+			"code":     "overdraft",
+			"account":  overdraft.Account,
+			"currency": overdraft.Currency,
+		})
+		return
+	}
+
 	switch {
 	case errors.Is(err, ledger.ErrUnknownAccount):
 		writeError(w, http.StatusBadRequest, "unknown_account", err.Error())

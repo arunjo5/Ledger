@@ -89,6 +89,11 @@ func (s *Store) commitEntries(ctx context.Context, txID string, in NewTransactio
 	}
 	defer dbTx.Rollback(ctx)
 
+	protected, err := lockProtectedAccounts(ctx, dbTx, accountIDsOf(in.Entries))
+	if err != nil {
+		return Transaction{}, nil, err
+	}
+
 	entries := make([]Entry, 0, len(in.Entries))
 	for _, e := range in.Entries {
 		var id int64
@@ -116,6 +121,12 @@ func (s *Store) commitEntries(ctx context.Context, txID string, in NewTransactio
 		`update transactions set status = 'committed', committed_at = now()
 		 where id = $1::uuid returning committed_at`, txID).Scan(&committedAt); err != nil {
 		return Transaction{}, nil, err
+	}
+
+	if len(protected) > 0 {
+		if err := assertNoOverdraft(ctx, dbTx, protected); err != nil {
+			return Transaction{}, nil, err
+		}
 	}
 
 	txn := Transaction{
@@ -366,4 +377,71 @@ func pgErrorCode(err error) string {
 		return pgErr.Code
 	}
 	return ""
+}
+
+type OverdraftError struct {
+	Account  string
+	Currency string
+}
+
+func (e *OverdraftError) Error() string {
+	return "would overdraw account " + e.Account
+}
+
+func accountIDsOf(entries []EntryInput) []string {
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !seen[e.AccountID] {
+			seen[e.AccountID] = true
+			ids = append(ids, e.AccountID)
+		}
+	}
+	return ids
+}
+
+func lockProtectedAccounts(ctx context.Context, dbTx pgx.Tx, accountIDs []string) ([]string, error) {
+	if len(accountIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := dbTx.Query(ctx,
+		`select id::text from accounts
+		 where id = any($1::uuid[]) and overdraft_protected
+		 order by id for update`, accountIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func assertNoOverdraft(ctx context.Context, dbTx pgx.Tx, accountIDs []string) error {
+	var label, currency string
+	var balance int64
+	err := dbTx.QueryRow(ctx,
+		`select coalesce(a.label, a.id::text), e.currency, sum(e.amount)::bigint
+		 from entries e
+		 join transactions t on t.id = e.transaction_id
+		 join accounts a on a.id = e.account_id
+		 where e.account_id = any($1::uuid[]) and t.status = 'committed'
+		 group by a.id, a.label, e.currency
+		 having sum(e.amount) < 0
+		 order by a.label, e.currency
+		 limit 1`, accountIDs).Scan(&label, &currency, &balance)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	return &OverdraftError{Account: label, Currency: currency}
 }
