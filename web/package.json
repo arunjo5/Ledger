@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "LedgerCore — double-entry ledger demo UI (React + Vite). UI talks to a swappable ledger client; the default is an in-memory mock implementing the documented API contract.",
+  "description": "React + Vite console for the LedgerCore double-entry ledger API.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

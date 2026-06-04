@@ -13,6 +13,7 @@ import (
 
 type Server struct {
 	cfg  config.Config
+	api  http.Handler
 	http *http.Server
 }
 
@@ -38,20 +39,30 @@ func NewServer(cfg config.Config, store *ledger.Store) *Server {
 	mux.HandleFunc("POST /admin/reconcile", h.reconcile)
 	mux.HandleFunc("POST /demo/reset", h.reset)
 
+	// The API serves at the root for tests; in a deployed build it is mounted
+	// under /api/v1 and the built frontend is served from StaticDir.
+	root := http.NewServeMux()
+	root.HandleFunc("GET /healthz", handleHealth)
+	root.Handle("/api/v1/", http.StripPrefix("/api/v1", mux))
+	if cfg.StaticDir != "" {
+		root.Handle("/", spaHandler(cfg.StaticDir))
+	}
+
 	return &Server{
 		cfg: cfg,
+		api: mux,
 		http: &http.Server{
 			Addr:         cfg.Addr,
-			Handler:      mux,
+			Handler:      root,
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: 10 * time.Second,
 		},
 	}
 }
 
-// Handler exposes the router for tests.
+// Handler exposes the API router for tests.
 func (s *Server) Handler() http.Handler {
-	return s.http.Handler
+	return s.api
 }
 
 func (s *Server) Run(ctx context.Context) error {
